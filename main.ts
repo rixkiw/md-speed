@@ -15,8 +15,63 @@ const inputArg = (() => {
 })();
 
 const casesPath = inputArg ?? join(INPUT_DIR, 'cases.json');
-const cases = JSON.parse(readFileSync(casesPath, 'utf8')) as { id: string; markdown: string }[];
+
+// Stream the cases one at a time and render each as soon as it's parsed, rather than
+// materializing the whole parsed input array before rendering. `readFileSync` gives us the
+// raw text; we decode it and walk the JSON array element by element with a small scanner so
+// we never hold more than one markdown source plus its rendered HTML per case.
+const decoder = new TextDecoder();
+const source = readFileSync(casesPath);
 
 const html: string[] = [];
-for (const c of cases) html.push(parse(c.markdown));
+let pos = 0;
+const len = source.length;
+const skipWs = () => {
+  while (pos < len) {
+    const b = source[pos];
+    if (b === 0x20 || b === 0x09 || b === 0x0a || b === 0x0d) pos++;
+    else break;
+  }
+};
+
+skipWs();
+if (pos >= len || source[pos] !== 0x5b /* [ */) throw new SyntaxError('cases.json must be a JSON array');
+pos++;
+
+skipWs();
+if (pos < len && source[pos] !== 0x5d /* ] */) {
+  for (;;) {
+    const start = pos;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (; pos < len; pos++) {
+      const b = source[pos];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (b === 0x5c /* \ */) escaped = true;
+        else if (b === 0x22 /* " */) inString = false;
+      } else if (b === 0x22) {
+        inString = true;
+      } else if (b === 0x7b /* { */ || b === 0x5b /* [ */) {
+        depth++;
+      } else if (b === 0x7d /* } */ || b === 0x5d /* ] */) {
+        if (depth === 0) break;
+        depth--;
+      } else if (b === 0x2c /* , */ && depth === 0) {
+        break;
+      }
+    }
+    const c = JSON.parse(decoder.decode(source.subarray(start, pos))) as { id: string; markdown: string };
+    html.push(parse(c.markdown));
+    skipWs();
+    if (pos < len && source[pos] === 0x2c /* , */) {
+      pos++;
+      skipWs();
+    } else {
+      break;
+    }
+  }
+}
+
 writeFileSync(join(OUTPUT_DIR, 'html.json'), JSON.stringify(html));
